@@ -4,6 +4,7 @@
 
 
 #define _GNU_SOURCE
+#define STACK_SIZE (1024 * 1024)
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
@@ -107,6 +108,8 @@ finish_options:
 	if (!config.argc) goto usage;
 	if (!config.mount_dir) goto usage;
 
+	/*Checking Linux Version*/
+	
 	fprintf(stderr, "=> validating Linux version...");
 	struct utsname host = {0};
 	if (uname(&host)) {
@@ -131,9 +134,47 @@ finish_options:
 	char hostname[256] = {0};
 	if (choose_hostname(hostname, sizeof(hostname)))
 		goto error;
-	config.hostname = hostname;
 
-<<namespaces>>
+	/* Namespace codes*/	
+	
+	config.hostname = hostname;
+	if (socketpair(AF_LOCAL, SOCK_SEQPACKET, 0, sockets)) {
+		fprintf(stderr, "socketpair failed: %m\n");
+		goto error;
+	}
+	if (fcntl(sockets[0], F_SETFD, FD_CLOEXEC)) {
+		fprintf(stderr, "fcntl failed: %m\n");
+		goto error;
+	}
+	config.fd = sockets[1];
+
+	char *stack = 0;
+	if (!(stack = malloc(STACK_SIZE))) {
+		fprintf(stderr, "=> malloc failed, out of memory?\n");
+		goto error;
+	}
+
+	if (resources(&config)) {
+		err = 1;
+		goto clear_resources;
+	}
+
+	int flags = CLONE_NEWNS
+		| CLONE_NEWCGROUP
+		| CLONE_NEWPID
+		| CLONE_NEWIPC
+		| CLONE_NEWNET
+		| CLONE_NEWUTS
+	
+	if ((child_pid = clone(child, stack + STACK_SIZE, flags | SIGCHLD, &config)) == -1) {
+		fprintf(stderr, "=> clone failed! %m\n");
+		err = 1;
+		goto clear_resources;
+	}	
+	
+	close(sockets[1]);
+	sockets[1] = 0;
+
 
 	goto cleanup;
 usage:
